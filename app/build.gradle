@@ -1,0 +1,33 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.example.eudicfirst'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.example.eudicfirst"
+        minSdk 28          // Android 9 — 浮动选择菜单稳定版本
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false   // Xposed 模块禁止混淆类名
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+}
+
+dependencies {
+    // de.robv Xposed API（compile-only，运行时由 LSPosed 框架提供）
+    compileOnly 'de.robv.android.xposed:api:82'
+}

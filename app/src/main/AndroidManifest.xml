@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.eudicfirst">
+
+    <!-- LSPosed / Xposed 模块标志 -->
+    <application
+        android:label="EudicFirst"
+        android:allowBackup="false"
+        android:supportsRtl="true">
+
+        <!-- Xposed 模块描述元数据 -->
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+
+        <meta-data
+            android:name="xposeddescription"
+            android:value="让欧路查词始终出现在文字选择菜单最左侧（第一位）" />
+
+        <!-- 最低支持 API 级别，建议 28（Android 9）以上 -->
+        <meta-data
+            android:name="xposedminversion"
+            android:value="93" />
+
+        <!--
+            scope 白名单（可选，LSPosed 支持）：
+            留空则对所有 App 生效；如需限定范围，在模块管理界面勾选。
+        -->
+    </application>
+
+</manifest>
