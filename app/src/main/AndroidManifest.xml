@@ -2,6 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.eudicfirst">
 
+    <!-- Android 11+ 包可见性：声明需要交互的包 -->
+    <queries>
+        <package android:name="com.eusoft.eudic" />
+    </queries>
+
     <!-- LSPosed / Xposed 模块标志 -->
     <application
         android:label="EudicFirst"
@@ -22,10 +27,14 @@
             android:name="xposedminversion"
             android:value="93" />
 
-        <!--
-            scope 白名单（可选，LSPosed 支持）：
-            留空则对所有 App 生效；如需限定范围，在模块管理界面勾选。
-        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
     </application>
 
 </manifest>

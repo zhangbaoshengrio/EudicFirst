@@ -1,6 +1,7 @@
 package com.example.eudicfirst;
 
 import android.app.Activity;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.view.ActionMode;
@@ -8,6 +9,8 @@ import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.TextView;
+
+import java.lang.reflect.Field;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -17,196 +20,200 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public class EudicHook implements IXposedHookLoadPackage {
 
-    private static final int EUDIC_MENU_ID = 10001;
-    private static final int EUDIC_ORDER = -10000;
-    private static final String EUDIC_PACKAGE = "com.eusoft.eudic";
-    private static final String EUDIC_ACTIVITY = "com.eusoft.eudic.ExternalSearchActivity";
-    private static final String MENU_TITLE = "欧路查词";
+    private static final int EUDIC_MENU_ID    = 10001;
+    private static final int EUDIC_ORDER      = -10000;
+    private static final String EUDIC_PKG     = "com.eusoft.eudic";
+    private static final String EUDIC_ACT     = "com.eusoft.eudic.ExternalSearchActivity";
+    private static final String MENU_TITLE    = "欧路查词";
 
     @Override
-    public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
-        // 跳过欧路词典自身
-        if (EUDIC_PACKAGE.equals(lpparam.packageName)) return;
+    public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lp) {
+        if (EUDIC_PKG.equals(lp.packageName)) return;
 
-        hookActivityActionMode(lpparam);
-        hookEditorCallback(lpparam);
+        XposedBridge.log("[EudicFirst] handleLoadPackage: " + lp.packageName);
+
+        // Hook 1: Activity.onActionModeStarted（最广覆盖）
+        hookActivityActionMode(lp);
+
+        // Hook 2: FloatingToolbar.setMenu（更底层，不受 Activity 子类影响）
+        hookFloatingToolbar(lp);
+
+        // Hook 3: Editor Callback 系列（标准文本框补充）
+        hookEditorCallbacks(lp);
     }
 
-    // ─────────────────────────────────────────────
-    // Hook 1（主力）：Activity.onActionModeStarted
-    // 任何 App 弹出 ActionMode 时都会触发，最可靠
-    // ─────────────────────────────────────────────
-    private void hookActivityActionMode(XC_LoadPackage.LoadPackageParam lpparam) {
+    // ── Hook 1 ──────────────────────────────────────────────────────────────
+    private void hookActivityActionMode(XC_LoadPackage.LoadPackageParam lp) {
         try {
-            XposedHelpers.findAndHookMethod(
-                    Activity.class,
-                    "onActionModeStarted",
-                    ActionMode.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            try {
-                                Activity activity = (Activity) param.thisObject;
-                                ActionMode mode = (ActionMode) param.args[0];
-                                if (mode == null) return;
+            XposedHelpers.findAndHookMethod(Activity.class, "onActionModeStarted",
+                    ActionMode.class, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    Activity activity = (Activity) param.thisObject;
+                    ActionMode mode  = (ActionMode) param.args[0];
+                    if (mode == null) return;
+                    Menu menu = mode.getMenu();
+                    if (menu == null || !isTextSelection(menu)) return;
+                    if (menu.findItem(EUDIC_MENU_ID) != null) return;
 
-                                Menu menu = mode.getMenu();
-                                if (menu == null) return;
-
-                                // 只在有文字选择相关菜单项时注入（Copy/Cut/Paste 的 id 是固定的）
-                                if (!isTextSelectionMenu(menu)) return;
-
-                                if (menu.findItem(EUDIC_MENU_ID) != null) return;
-
-                                MenuItem item = menu.add(
-                                        Menu.NONE, EUDIC_MENU_ID, EUDIC_ORDER, MENU_TITLE);
-                                item.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS);
-                                item.setOnMenuItemClickListener(menuItem -> {
-                                    launchEudic(activity, mode);
-                                    return true;
-                                });
-                            } catch (Throwable t) {
-                                XposedBridge.log("[EudicFirst] onActionModeStarted inner: " + t);
-                            }
-                        }
-                    });
-
-            XposedBridge.log("[EudicFirst] Hook1(Activity) OK: " + lpparam.packageName);
+                    addItem(menu, mode, activity);
+                    XposedBridge.log("[EudicFirst] Hook1 injected in " + lp.packageName);
+                }
+            });
+            XposedBridge.log("[EudicFirst] Hook1 registered: " + lp.packageName);
         } catch (Throwable t) {
-            XposedBridge.log("[EudicFirst] Hook1 failed for " + lpparam.packageName + ": " + t);
+            XposedBridge.log("[EudicFirst] Hook1 fail: " + t);
         }
     }
 
-    // ─────────────────────────────────────────────
-    // Hook 2（补充）：Editor$SelectionActionModeCallback
-    // 覆盖部分不走 Activity.onActionModeStarted 的场景
-    // ─────────────────────────────────────────────
-    private void hookEditorCallback(XC_LoadPackage.LoadPackageParam lpparam) {
-        // 尝试多个可能的内部类名（不同 ROM/Android 版本不同）
-        String[] classNames = {
-                "android.widget.Editor$SelectionActionModeCallback",
-                "android.widget.Editor$SelectionActionModeCallback2",
-                "android.widget.Editor$TextActionModeCallback",
+    // ── Hook 2 ──────────────────────────────────────────────────────────────
+    private void hookFloatingToolbar(XC_LoadPackage.LoadPackageParam lp) {
+        // android.view.FloatingToolbar 是 API 23+ 的内部类，所有 App 都有
+        try {
+            Class<?> ftClass = XposedHelpers.findClass(
+                    "android.view.FloatingToolbar", lp.classLoader);
+
+            XposedBridge.hookAllMethods(ftClass, "setMenu", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    try {
+                        Menu menu = (Menu) param.args[0];
+                        if (menu == null || !isTextSelection(menu)) return;
+                        if (menu.findItem(EUDIC_MENU_ID) != null) return;
+
+                        // FloatingToolbar 持有 mContext
+                        Context ctx = getField(param.thisObject, "mContext");
+                        // FloatingToolbar 持有 mActionMode
+                        ActionMode mode = getField(param.thisObject, "mActionMode");
+
+                        addItem(menu, mode, ctx);
+                        XposedBridge.log("[EudicFirst] Hook2(FloatingToolbar) injected in "
+                                + lp.packageName);
+                    } catch (Throwable t) {
+                        XposedBridge.log("[EudicFirst] Hook2 inner: " + t);
+                    }
+                }
+            });
+            XposedBridge.log("[EudicFirst] Hook2 registered: " + lp.packageName);
+        } catch (Throwable t) {
+            XposedBridge.log("[EudicFirst] Hook2 fail: " + t);
+        }
+    }
+
+    // ── Hook 3 ──────────────────────────────────────────────────────────────
+    private void hookEditorCallbacks(XC_LoadPackage.LoadPackageParam lp) {
+        String[] candidates = {
+            "android.widget.Editor$SelectionActionModeCallback",
+            "android.widget.Editor$SelectionActionModeCallback2",
+            "android.widget.Editor$TextActionModeCallback",
         };
-
-        for (String className : classNames) {
+        for (String name : candidates) {
             try {
-                Class<?> clz = XposedHelpers.findClass(className, lpparam.classLoader);
-                hookCallbackClass(clz, lpparam.packageName);
-                XposedBridge.log("[EudicFirst] Hook2 found: " + className);
+                Class<?> clz = XposedHelpers.findClass(name, lp.classLoader);
+                XposedBridge.hookAllMethods(clz, "onCreateActionMode", new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        ActionMode mode = (ActionMode) param.args[0];
+                        Menu menu       = (Menu) param.args[1];
+                        if (menu == null || menu.findItem(EUDIC_MENU_ID) != null) return;
+                        addItem(menu, mode, getContextFromMode(mode));
+                        XposedBridge.log("[EudicFirst] Hook3(" + name + ") injected");
+                    }
+                });
+                XposedBridge.hookAllMethods(clz, "onPrepareActionMode", new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        ActionMode mode = (ActionMode) param.args[0];
+                        Menu menu       = (Menu) param.args[1];
+                        if (menu == null || menu.findItem(EUDIC_MENU_ID) != null) return;
+                        addItem(menu, mode, getContextFromMode(mode));
+                        param.setResult(true);
+                    }
+                });
+                XposedBridge.log("[EudicFirst] Hook3 registered: " + name);
             } catch (XposedHelpers.ClassNotFoundError ignored) {
-                // 该类不存在则跳过
             } catch (Throwable t) {
-                XposedBridge.log("[EudicFirst] Hook2 err " + className + ": " + t);
+                XposedBridge.log("[EudicFirst] Hook3 fail " + name + ": " + t);
             }
         }
     }
 
-    private void hookCallbackClass(Class<?> clz, String pkg) {
-        XposedBridge.hookAllMethods(clz, "onCreateActionMode", new XC_MethodHook() {
-            @Override
-            protected void afterHookedMethod(MethodHookParam param) {
-                ActionMode mode = (ActionMode) param.args[0];
-                Menu menu = (Menu) param.args[1];
-                if (menu == null || menu.findItem(EUDIC_MENU_ID) != null) return;
-                injectItem(mode, menu);
-            }
-        });
-
-        XposedBridge.hookAllMethods(clz, "onPrepareActionMode", new XC_MethodHook() {
-            @Override
-            protected void afterHookedMethod(MethodHookParam param) {
-                ActionMode mode = (ActionMode) param.args[0];
-                Menu menu = (Menu) param.args[1];
-                if (menu == null || menu.findItem(EUDIC_MENU_ID) != null) return;
-                injectItem(mode, menu);
-                param.setResult(true);
-            }
-        });
-    }
-
-    // ─────────────────────────────────────────────
-    // 工具方法
-    // ─────────────────────────────────────────────
-
-    /** 判断是否是文字选择菜单（包含 Copy/Cut/SelectAll 等）*/
-    private boolean isTextSelectionMenu(Menu menu) {
-        // android.R.id.copy = 0x01020030, cut = 0x0102002f, selectAll = 0x01020035
-        return menu.findItem(android.R.id.copy) != null
-                || menu.findItem(android.R.id.cut) != null
-                || menu.findItem(android.R.id.selectAll) != null
-                || menu.findItem(android.R.id.shareText) != null;
-    }
-
-    private void injectItem(ActionMode mode, Menu menu) {
-        // 从 mode 中拿不到 Activity，通过 view 反射获取 context
-        Context ctx = getContextFromMode(mode);
+    // ── 公共：添加菜单项 ────────────────────────────────────────────────────
+    private void addItem(Menu menu, ActionMode mode, Context ctx) {
         MenuItem item = menu.add(Menu.NONE, EUDIC_MENU_ID, EUDIC_ORDER, MENU_TITLE);
         item.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS);
-        item.setOnMenuItemClickListener(menuItem -> {
-            launchEudic(ctx, mode);
+        item.setOnMenuItemClickListener(m -> {
+            launchEudic(mode, ctx);
             return true;
         });
     }
 
-    private void launchEudic(Context ctx, ActionMode mode) {
+    // ── 查词 ────────────────────────────────────────────────────────────────
+    private void launchEudic(ActionMode mode, Context ctx) {
         try {
-            String text = getSelectedText(mode, ctx);
+            String text = extractSelected(mode, ctx);
             if (text == null || text.isEmpty()) {
-                XposedBridge.log("[EudicFirst] No selected text");
+                XposedBridge.log("[EudicFirst] no selected text");
                 return;
             }
+            XposedBridge.log("[EudicFirst] launching eudic with: " + text);
+
+            Context appCtx = (ctx != null) ? ctx.getApplicationContext() : null;
+            if (appCtx == null) return;
 
             Intent intent = new Intent(Intent.ACTION_PROCESS_TEXT);
-            intent.setClassName(EUDIC_PACKAGE, EUDIC_ACTIVITY);
+            intent.setClassName(EUDIC_PKG, EUDIC_ACT);
             intent.putExtra(Intent.EXTRA_PROCESS_TEXT, text);
             intent.putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, true);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
 
             try {
-                ctx.startActivity(intent);
+                appCtx.startActivity(intent);
             } catch (Throwable e) {
-                // 回退 ACTION_SEND
-                Intent fallback = new Intent(Intent.ACTION_SEND);
-                fallback.setClassName(EUDIC_PACKAGE, EUDIC_ACTIVITY);
-                fallback.setType("text/plain");
-                fallback.putExtra(Intent.EXTRA_TEXT, text);
-                fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                ctx.startActivity(fallback);
+                XposedBridge.log("[EudicFirst] fallback to ACTION_SEND: " + e.getMessage());
+                Intent fb = new Intent(Intent.ACTION_SEND);
+                fb.setClassName(EUDIC_PKG, EUDIC_ACT);
+                fb.setType("text/plain");
+                fb.putExtra(Intent.EXTRA_TEXT, text);
+                fb.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                appCtx.startActivity(fb);
             }
 
-            mode.finish();
+            if (mode != null) mode.finish();
         } catch (Throwable t) {
             XposedBridge.log("[EudicFirst] launchEudic: " + t);
         }
     }
 
-    /** 从 ActionMode 关联的 View 里取选中文字 */
-    private String getSelectedText(ActionMode mode, Context ctx) {
-        try {
-            // FloatingActionMode 持有 mOriginatingView
-            View view = (View) XposedHelpers.getObjectField(mode, "mOriginatingView");
-            if (view instanceof TextView) {
-                TextView tv = (TextView) view;
-                int start = tv.getSelectionStart();
-                int end = tv.getSelectionEnd();
-                if (start >= 0 && end > start) {
-                    return tv.getText().subSequence(start, end).toString();
-                }
-            }
-        } catch (Throwable ignored) {}
+    // ── 选中文字提取（三级回退）──────────────────────────────────────────────
+    private String extractSelected(ActionMode mode, Context ctx) {
+        // 1. FloatingActionMode.mOriginatingView
+        if (mode != null) {
+            try {
+                View v = getField(mode, "mOriginatingView");
+                String t = selectionFrom(v);
+                if (t != null) return t;
+            } catch (Throwable ignored) {}
+        }
 
-        // 从 Activity 的当前焦点 View 取
+        // 2. Activity.getCurrentFocus
         if (ctx instanceof Activity) {
             try {
-                View focused = ((Activity) ctx).getCurrentFocus();
-                if (focused instanceof TextView) {
-                    TextView tv = (TextView) focused;
-                    int start = tv.getSelectionStart();
-                    int end = tv.getSelectionEnd();
-                    if (start >= 0 && end > start) {
-                        return tv.getText().subSequence(start, end).toString();
-                    }
+                View v = ((Activity) ctx).getCurrentFocus();
+                String t = selectionFrom(v);
+                if (t != null) return t;
+            } catch (Throwable ignored) {}
+        }
+
+        // 3. 剪贴板（用户通常会先复制一次，或系统自动写入）
+        if (ctx != null) {
+            try {
+                ClipboardManager cm = (ClipboardManager) ctx
+                        .getSystemService(Context.CLIPBOARD_SERVICE);
+                if (cm != null && cm.hasPrimaryClip()) {
+                    CharSequence clip = cm.getPrimaryClip()
+                            .getItemAt(0).coerceToText(ctx);
+                    if (clip != null && clip.length() > 0) return clip.toString();
                 }
             } catch (Throwable ignored) {}
         }
@@ -214,10 +221,48 @@ public class EudicHook implements IXposedHookLoadPackage {
         return null;
     }
 
-    private Context getContextFromMode(ActionMode mode) {
-        try {
-            return (Context) XposedHelpers.getObjectField(mode, "mContext");
-        } catch (Throwable ignored) {}
+    private String selectionFrom(View v) {
+        if (!(v instanceof TextView)) return null;
+        TextView tv = (TextView) v;
+        int s = tv.getSelectionStart(), e = tv.getSelectionEnd();
+        if (s >= 0 && e > s && tv.getText() != null)
+            return tv.getText().subSequence(s, e).toString();
         return null;
+    }
+
+    // ── 工具 ────────────────────────────────────────────────────────────────
+    @SuppressWarnings("unchecked")
+    private <T> T getField(Object obj, String name) {
+        try {
+            return (T) XposedHelpers.getObjectField(obj, name);
+        } catch (Throwable t) {
+            // 尝试父类字段
+            try {
+                Class<?> clz = obj.getClass();
+                while (clz != null) {
+                    try {
+                        Field f = clz.getDeclaredField(name);
+                        f.setAccessible(true);
+                        return (T) f.get(obj);
+                    } catch (NoSuchFieldException ignored) {
+                        clz = clz.getSuperclass();
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+        return null;
+    }
+
+    private Context getContextFromMode(ActionMode mode) {
+        if (mode == null) return null;
+        try { return getField(mode, "mContext"); } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private boolean isTextSelection(Menu menu) {
+        return menu.findItem(android.R.id.copy)      != null
+            || menu.findItem(android.R.id.cut)       != null
+            || menu.findItem(android.R.id.selectAll) != null
+            || menu.findItem(android.R.id.shareText) != null;
     }
 }
