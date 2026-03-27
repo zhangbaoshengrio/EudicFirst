@@ -2,39 +2,43 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.eudicfirst">
 
-    <!-- Android 11+ 包可见性：声明需要交互的包 -->
+    <!-- 查询所有已安装包（用于跳转欧路词典）-->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <!-- Android 11+ 包可见性 -->
     <queries>
         <package android:name="com.eusoft.eudic" />
+        <package android:name="com.qianyan.eudic" />
     </queries>
 
-    <!-- LSPosed / Xposed 模块标志 -->
     <application
         android:label="EudicFirst"
         android:allowBackup="false"
         android:supportsRtl="true">
 
-        <!-- Xposed 模块描述元数据 -->
-        <meta-data
-            android:name="xposedmodule"
-            android:value="true" />
+        <!-- Xposed 模块标志（LSPosed 识别用）-->
+        <meta-data android:name="xposedmodule"      android:value="true" />
+        <meta-data android:name="xposeddescription" android:value="让欧路查词始终出现在文字选择菜单最左侧" />
+        <meta-data android:name="xposedminversion"  android:value="93" />
+        <meta-data android:name="xposedsharedprefs" android:value="true" />
 
-        <meta-data
-            android:name="xposeddescription"
-            android:value="让欧路查词始终出现在文字选择菜单最左侧（第一位）" />
-
-        <!-- 最低支持 API 级别，建议 28（Android 9）以上 -->
-        <meta-data
-            android:name="xposedminversion"
-            android:value="93" />
-
+        <!-- 模块主界面：必须包含 MODULE_SETTINGS category，LSPosed 靠此识别模块入口 -->
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:label="EudicFirst">
+            <!-- LSPosed 模块设置入口（必须） -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
+            </intent-filter>
+            <!-- 桌面图标 -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
     </application>
 
 </manifest>
